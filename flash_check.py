@@ -19,6 +19,8 @@ except Exception:  # pragma: no cover - optional dependency
 
 BUFFER_SIZE = 1024 * 1024  # 1 MiB chunks
 SAFETY_BUFFER = 64 * 1024 * 1024  # leave ~64 MiB free to avoid OS issues
+# Maximum single file size to avoid FAT32 4 GiB limits (use 3.5 GiB safety)
+MAX_FILE_SIZE = (7 * 1024 * 1024 * 1024) // 2  # 3.5 GiB
 
 
 def human_bytes(n: int) -> str:
@@ -95,6 +97,14 @@ def list_drives() -> List[DriveInfo]:
                         drives.append(DriveInfo(mount=root, device=root, fstype=None, total=usage.total, free=usage.free))
                     except Exception:
                         continue
+
+    # On macOS, only show drives mounted under /Volumes
+    try:
+        if platform.system().lower() == "darwin":
+            drives = [d for d in drives if os.path.abspath(d.mount).startswith("/Volumes/")]
+    except Exception:
+        # If platform check fails, leave list as-is
+        pass
 
     # Enrich with vendor/model when possible
     for d in drives:
@@ -254,6 +264,9 @@ def _write_pattern_file(dir_path: str, filename: str, total_bytes: int, pattern:
     Returns hex digest if compute_hash is True, else None.
     """
     hasher = hashlib.sha256() if compute_hash else None
+    # Enforce maximum single-file size (3.5 GiB)
+    if total_bytes > MAX_FILE_SIZE:
+        total_bytes = MAX_FILE_SIZE
     written = 0
     path = os.path.join(dir_path, filename)
     last_print = 0.0
@@ -331,7 +344,7 @@ def run_health_check(target_mount: str, force: bool = False) -> int:
     # Decide test file size: aim to use nearly all capacity but leave a safety buffer
     # Prefer to use total size minus SAFETY_BUFFER, but not exceed free space minus SAFETY_BUFFER
     usage = shutil.disk_usage(selected.mount)
-    target_size = max(0, min(usage.total - SAFETY_BUFFER, usage.free - SAFETY_BUFFER))
+    target_size = max(0, min(usage.total - SAFETY_BUFFER, usage.free - SAFETY_BUFFER, MAX_FILE_SIZE))
     # Ensure at least some minimal size
     if target_size < 8 * 1024 * 1024:
         print("Not enough free space to run tests safely (need at least 8 MiB free).")
